@@ -22,6 +22,7 @@ func (c *Client) readPump(hub *Hub) {
 		}
 
 		data, _ := json.Marshal(leave)
+
 		hub.broadcast <- data
 
 		hub.unregister <- c
@@ -29,28 +30,55 @@ func (c *Client) readPump(hub *Hub) {
 	}()
 
 	for {
-		_, message, err := c.conn.ReadMessage()
+		_, raw, err := c.conn.ReadMessage()
 		if err != nil {
 			break
 		}
 
-		text := string(message)
+		var incoming Message
+		if err := json.Unmarshal(raw, &incoming); err == nil {
+			// typing
+			if incoming.Type == "typing" {
+				if target, ok := hub.clientsByName[incoming.To]; ok {
+					data, _ := json.Marshal(Message{
+						Type:     "typing",
+						Username: c.username,
+						To:       incoming.To,
+					})
+					target.send <- data
+				}
+				continue
+			}
+
+			// private message
+			if incoming.Type == "private" {
+				incoming.Username = c.username
+				incoming.Time = time.Now().Unix()
+				data, _ := json.Marshal(incoming)
+				hub.private <- PrivateMessage{
+					to:   incoming.To,
+					data: data,
+				}
+				c.send <- data
+				continue
+			}
+		}
+
+		// global message
+		text := string(raw)
 		if len(text) == 0 || len(text) > 500 {
 			continue
 		}
-
 		out := Message{
 			Type:     "message",
 			Username: c.username,
 			Msg:      text,
 			Time:     time.Now().Unix(),
 		}
-
 		data, _ := json.Marshal(out)
 		hub.broadcast <- data
 	}
 }
-
 func (c *Client) writePump() {
 	defer c.conn.Close()
 	for message := range c.send {
